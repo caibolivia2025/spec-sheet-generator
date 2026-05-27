@@ -1596,6 +1596,46 @@
         <div id="sheetAdminStatus" style="font-size:10px;color:#6a6b76;margin-top:6px;line-height:1.5;"></div>
       </div>
 
+      <div class="form-section">
+        <h2>Mapeo de Specs Técnicos</h2>
+        <div style="font-size:10px;color:#6a6b76;margin:-4px 0 10px;line-height:1.4;">
+          Configura cómo las columnas de specs del sheet se muestran en el spec sheet. Cada fila: <strong style="color:#b8b9c4;">columna del sheet</strong> → <strong style="color:#b8b9c4;">label profesional</strong> → <strong style="color:#b8b9c4;">grupo</strong>. Las filas con valores como "NA" se omiten automáticamente.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 24px;gap:6px;font-size:9px;color:#8a8b96;text-transform:uppercase;letter-spacing:0.5px;padding:0 2px 4px;">
+          <div>Columna sheet</div>
+          <div>Label</div>
+          <div>Grupo</div>
+          <div></div>
+        </div>
+        <div id="specMappingList"></div>
+        <datalist id="specGroupDatalist">
+          <option value="Audio"></option>
+          <option value="Conectividad"></option>
+          <option value="Batería / Power"></option>
+          <option value="Físico / Physical"></option>
+          <option value="Cumplimiento / Compliance"></option>
+          <option value="Rendimiento / Performance"></option>
+          <option value="Características / Features"></option>
+        </datalist>
+        <div style="display:flex;gap:6px;margin-top:10px;">
+          <button class="btn secondary" id="addSpecMappingRow" style="flex:1;">+ Agregar fila</button>
+          <button class="btn secondary" id="autoDetectSpecs" style="flex:1;" title="Detecta columnas que parecen specs y las pre-llena">Detectar columnas</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button class="btn secondary" id="clearSpecMapping" style="flex:1;background:#5a2e2e;">Borrar todo el mapeo</button>
+        </div>
+
+        <div class="field" style="margin-top:14px;">
+          <label>Valores a ignorar
+            <span style="font-weight:400;color:#6a6b76;font-size:10px;">(separados por coma)</span>
+          </label>
+          <input type="text" id="ignoredValues" placeholder="ej. NA, N/A, —, -, none" />
+          <div style="font-size:10px;color:#6a6b76;margin-top:4px;line-height:1.4;">
+            Filas con estos valores no se muestran en el spec sheet (sin importar mayúsculas).
+          </div>
+        </div>
+      </div>
+
       <div class="form-section" style="border-bottom:none;">
         <h2>Datos</h2>
         <div style="display:flex;gap:8px;">
@@ -2396,6 +2436,261 @@ window.addEventListener('resize', scaleToFit);
 
 // (Series Library removed — sales sheet concept, not used in spec sheets)
 
+// ============ SPEC MAPPING (Camino C) ============
+// User configures a list of {sheetCol, label, group} entries.
+// When loading a SKU, for each entry: look up the value in the SKU row,
+// apply normalization, drop if value is in ignored-list, then group into
+// state.specs in the form the render expects.
+
+var SPEC_MAPPING_KEY = 'specsheet_spec_mapping_v1';
+var IGNORED_VALUES_KEY = 'specsheet_ignored_values_v1';
+
+// Default ignored values (lowercased on comparison)
+var DEFAULT_IGNORED = ['na', 'n/a', '—', '-', 'none', 'ninguno', ''];
+
+// Default spec mapping (empty — user configures this)
+var DEFAULT_SPEC_MAPPING = [];
+
+// Predefined group choices for the picker (user can also type custom)
+var SPEC_GROUP_PRESETS = [
+  'Audio',
+  'Conectividad',
+  'Batería / Power',
+  'Físico / Physical',
+  'Cumplimiento / Compliance',
+  'Rendimiento / Performance',
+  'Características / Features'
+];
+
+var specMapping = [];
+var ignoredValues = DEFAULT_IGNORED.slice();
+
+// ---- Persistence ----
+function loadSpecMappingConfig() {
+  try {
+    var mapRaw = localStorage.getItem(SPEC_MAPPING_KEY);
+    if (mapRaw) specMapping = JSON.parse(mapRaw) || [];
+    var igRaw = localStorage.getItem(IGNORED_VALUES_KEY);
+    if (igRaw) ignoredValues = JSON.parse(igRaw) || DEFAULT_IGNORED.slice();
+  } catch (e) {
+    specMapping = [];
+    ignoredValues = DEFAULT_IGNORED.slice();
+  }
+}
+function saveSpecMappingConfig() {
+  try {
+    localStorage.setItem(SPEC_MAPPING_KEY, JSON.stringify(specMapping));
+    localStorage.setItem(IGNORED_VALUES_KEY, JSON.stringify(ignoredValues));
+  } catch (e) {}
+}
+
+// ---- Normalization ----
+function normalizeSpecValue(raw) {
+  if (raw === null || raw === undefined) return '';
+  var v = String(raw).trim();
+  if (!v) return '';
+  // "10" X 2" → "10" × 2"  (capital X or lowercase x between numbers/dimensions)
+  v = v.replace(/(\d|")\s*[xX]\s*(\d)/g, '$1 \u00D7 $2');
+  // Standalone "Sí" / "Si" / "yes" → bilingual
+  var lower = v.toLowerCase();
+  if (lower === 'si' || lower === 'sí' || lower === 'yes' || lower === 'y') return 'Sí / Yes';
+  if (lower === 'no' || lower === 'n') return 'No';
+  return v;
+}
+
+function isIgnoredValue(raw) {
+  if (raw === null || raw === undefined) return true;
+  var v = String(raw).trim().toLowerCase();
+  if (!v) return true;
+  return ignoredValues.indexOf(v) >= 0;
+}
+
+// ---- Build state.specs from current SKU row + mapping ----
+function applySpecMappingToRow(row) {
+  if (!specMapping.length) return [];
+
+  // Group entries by .group, preserving order of first occurrence
+  var groups = {};
+  var groupOrder = [];
+  specMapping.forEach(function(entry) {
+    var col = (entry.sheetCol || '').trim();
+    var label = (entry.label || '').trim();
+    var group = (entry.group || 'Características / Features').trim();
+    if (!col || !label) return;
+    var resolvedCol = findHeader(sheetData.headers, col);
+    if (!resolvedCol) return;
+    var rawValue = row[resolvedCol];
+    if (isIgnoredValue(rawValue)) return;
+    var value = normalizeSpecValue(rawValue);
+    if (!value) return;
+    if (!groups[group]) { groups[group] = []; groupOrder.push(group); }
+    groups[group].push({ label: label, value: value });
+  });
+
+  // Convert to state.specs shape
+  return groupOrder.map(function(g) {
+    return { title: g, items: groups[g] };
+  });
+}
+
+// ---- Admin UI: render the spec mapping editor ----
+function renderSpecMappingEditor() {
+  var container = document.getElementById('specMappingList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!specMapping.length) {
+    container.innerHTML = '<div style="font-size:10px;color:#6a6b76;font-style:italic;padding:8px;text-align:center;">No hay specs mapeados. Haz clic en "+ Agregar fila" para empezar.</div>';
+    return;
+  }
+
+  specMapping.forEach(function(entry, idx) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;margin-bottom:6px;align-items:center;';
+
+    var inputCol = document.createElement('input');
+    inputCol.type = 'text';
+    inputCol.value = entry.sheetCol || '';
+    inputCol.placeholder = 'Columna del sheet';
+    inputCol.title = 'Nombre del header en el sheet (ej. Driver, Watts, Spec1)';
+    inputCol.addEventListener('input', function() {
+      specMapping[idx].sheetCol = inputCol.value;
+      saveSpecMappingConfig();
+    });
+
+    var inputLabel = document.createElement('input');
+    inputLabel.type = 'text';
+    inputLabel.value = entry.label || '';
+    inputLabel.placeholder = 'Label en el spec sheet';
+    inputLabel.title = 'Cómo aparece en el documento (ej. Drivers / Speakers)';
+    inputLabel.addEventListener('input', function() {
+      specMapping[idx].label = inputLabel.value;
+      saveSpecMappingConfig();
+    });
+
+    var inputGroup = document.createElement('input');
+    inputGroup.type = 'text';
+    inputGroup.value = entry.group || '';
+    inputGroup.placeholder = 'Grupo';
+    inputGroup.setAttribute('list', 'specGroupDatalist');
+    inputGroup.title = 'Grupo (Audio, Conectividad, etc., o un grupo personalizado)';
+    inputGroup.addEventListener('input', function() {
+      specMapping[idx].group = inputGroup.value;
+      saveSpecMappingConfig();
+    });
+
+    var btnRemove = document.createElement('button');
+    btnRemove.className = 'icon-btn';
+    btnRemove.innerHTML = '\u00D7';
+    btnRemove.title = 'Eliminar';
+    btnRemove.style.cssText = 'width:24px;height:24px;font-size:14px;flex-shrink:0;';
+    btnRemove.addEventListener('click', function() {
+      specMapping.splice(idx, 1);
+      saveSpecMappingConfig();
+      renderSpecMappingEditor();
+    });
+
+    row.appendChild(inputCol);
+    row.appendChild(inputLabel);
+    row.appendChild(inputGroup);
+    row.appendChild(btnRemove);
+    container.appendChild(row);
+  });
+}
+
+// ---- Admin UI: render the ignored values input ----
+function renderIgnoredValuesInput() {
+  var el = document.getElementById('ignoredValues');
+  if (!el) return;
+  el.value = ignoredValues.join(', ');
+}
+function parseIgnoredValuesInput() {
+  var el = document.getElementById('ignoredValues');
+  if (!el) return;
+  var v = el.value || '';
+  ignoredValues = v.split(',').map(function(s){ return s.trim().toLowerCase(); }).filter(function(s){ return s !== undefined; });
+  // Always include empty string as ignored
+  if (ignoredValues.indexOf('') < 0) ignoredValues.push('');
+  saveSpecMappingConfig();
+}
+
+// ---- "Auto-detect" helper: pre-fill mapping with current sheet's spec-ish columns ----
+function autoDetectSpecMapping() {
+  if (!sheetData.headers.length) {
+    alert('Primero configura y prueba la conexión al sheet.');
+    return;
+  }
+  // Get columns already mapped in the main field mapping (don't duplicate them)
+  var alreadyMapped = {};
+  Object.keys(SHEET_COLUMN_FIELDS).forEach(function(fid) {
+    var el = document.getElementById(fid);
+    if (el && el.value.trim()) {
+      var resolved = findHeader(sheetData.headers, el.value.trim());
+      if (resolved) alreadyMapped[resolved] = true;
+    }
+  });
+  // Also exclude obvious non-spec columns
+  var skip = ['img', 'image', 'imagen', 'loading-qty-40hq', 'loading qty', 'qty', 'cantidad'];
+  // Suggest mapping for each remaining column
+  var suggestions = [];
+  sheetData.headers.forEach(function(h) {
+    if (alreadyMapped[h]) return;
+    var hl = h.toLowerCase().trim();
+    if (skip.some(function(s){ return hl.indexOf(s) >= 0; })) return;
+    // Guess a default group based on column name
+    var group = 'Características / Features';
+    if (/driver|watt|potenc|speaker|altavoz|audio|RMS|hz/i.test(h)) group = 'Audio';
+    else if (/bluetoot|usb|aux|hdmi|wifi|fm|radio|conectiv/i.test(h)) group = 'Conectividad';
+    else if (/batter|mah|voltaje|adaptador|charg|reproducci/i.test(h)) group = 'Batería / Power';
+    else if (/color|peso|weight|dimens|material|ip rating/i.test(h)) group = 'Físico / Physical';
+    else if (/cert|fcc|ce|rohs|un3481|cumplim/i.test(h)) group = 'Cumplimiento / Compliance';
+    else if (/rpm|capacidad|programa|eficien|rendim/i.test(h)) group = 'Rendimiento / Performance';
+    suggestions.push({ sheetCol: h, label: h, group: group });
+  });
+  if (!suggestions.length) {
+    alert('No se detectaron columnas de specs adicionales.');
+    return;
+  }
+  if (specMapping.length && !confirm('Ya tienes ' + specMapping.length + ' mapeos configurados. ¿Reemplazar con los detectados automáticamente? Acepta = reemplazar, Cancela = agregar al final.')) {
+    // Append mode
+    specMapping = specMapping.concat(suggestions);
+  } else {
+    specMapping = suggestions;
+  }
+  saveSpecMappingConfig();
+  renderSpecMappingEditor();
+}
+
+// ---- Wire up event listeners (called from wireSheetIntegration) ----
+function wireSpecMapping() {
+  loadSpecMappingConfig();
+  renderSpecMappingEditor();
+  renderIgnoredValuesInput();
+
+  var addBtn = document.getElementById('addSpecMappingRow');
+  if (addBtn) addBtn.addEventListener('click', function() {
+    specMapping.push({ sheetCol: '', label: '', group: 'Características / Features' });
+    saveSpecMappingConfig();
+    renderSpecMappingEditor();
+  });
+
+  var detectBtn = document.getElementById('autoDetectSpecs');
+  if (detectBtn) detectBtn.addEventListener('click', autoDetectSpecMapping);
+
+  var ignoredEl = document.getElementById('ignoredValues');
+  if (ignoredEl) ignoredEl.addEventListener('input', parseIgnoredValuesInput);
+
+  var clearBtn = document.getElementById('clearSpecMapping');
+  if (clearBtn) clearBtn.addEventListener('click', function() {
+    if (!confirm('¿Borrar todos los mapeos de specs?')) return;
+    specMapping = [];
+    saveSpecMappingConfig();
+    renderSpecMappingEditor();
+  });
+}
+// ============ END SPEC MAPPING ============
+
+
 // ============ GOOGLE SHEET INTEGRATION ============
 // CSV-publish path. Persists config in localStorage. Read-only.
 
@@ -2615,10 +2910,35 @@ function loadSheetIntoPicker(parsed) {
 }
 
 // ---- Load a specific SKU into state + form ----
+// All state keys that represent per-SKU data. When loading a new SKU,
+// any of these NOT filled from the sheet are cleared (so we don't leak data
+// from the previous SKU). Doc-level meta (docType, docYear, companyName, etc.)
+// and brandLogo are NOT in this list — they stay across SKU changes.
+var PER_SKU_FIELDS = [
+  'brand', 'seriesName', 'model', 'category', 'productImg',
+  'productName', 'barcode', 'hsCode', 'countryOfOrigin',
+  'fobOrigin', 'moq', 'leadTime', 'warranty',
+  'unitDimL', 'unitDimW', 'unitDimH', 'unitWeight', 'unitColor', 'unitMaterial',
+  'innerDimL', 'innerDimW', 'innerDimH', 'innerWeight', 'innerUnits',
+  'masterDimL', 'masterDimW', 'masterDimH', 'masterWeight', 'masterUnits', 'masterType'
+];
+
 function loadSkuIntoForm(sku) {
   if (!sku || !sku.row) return;
   var row = sku.row;
   var statusEl = document.getElementById('sheetStatus');
+
+  // ---- STEP 1: Clear all per-SKU fields and specs array ----
+  // This ensures data from the previously-loaded SKU doesn't leak through.
+  PER_SKU_FIELDS.forEach(function(key) { state[key] = ''; });
+  // Build state.specs from spec mapping (camino C)
+  state.specs = applySpecMappingToRow(row);
+  // Defaults that should NOT be empty strings:
+  state.brand = 'rca';  // Will be overwritten below if MARCA is mapped
+  state.countryOfOrigin = 'China';  // Sensible default
+  state.warranty = '12 meses / 12 months';  // Sensible default
+
+  // ---- STEP 2: Apply sheet values ----
   var filled = [], blank = [];
 
   Object.keys(SHEET_COLUMN_FIELDS).forEach(function(fid) {
@@ -2634,7 +2954,6 @@ function loadSkuIntoForm(sku) {
 
     // Special handling per field
     if (stateKey === 'brand') {
-      // Normalize: lowercase, must match one of our brand options
       var v = value.toLowerCase().trim();
       var brandSelect = document.getElementById('brand');
       var validBrands = [];
@@ -2643,7 +2962,6 @@ function loadSkuIntoForm(sku) {
           validBrands.push(brandSelect.options[i].value);
         }
       }
-      // Try direct match, then prefix match (e.g. "RCA" → "rca")
       var matched = validBrands.indexOf(v) >= 0 ? v : null;
       if (!matched) {
         for (var j = 0; j < validBrands.length; j++) {
@@ -2656,14 +2974,12 @@ function loadSkuIntoForm(sku) {
     }
 
     if (stateKey === 'fobOrigin') {
-      // Match against select options
       var fobSel = document.getElementById('fobOrigin');
       var validFob = [];
       if (fobSel) {
         for (var k = 0; k < fobSel.options.length; k++) validFob.push(fobSel.options[k].value);
       }
       var fobValue = validFob.indexOf(value) >= 0 ? value : '';
-      // Try prefix match: "ZL" → "FOB ZL"
       if (!fobValue) {
         for (var m = 0; m < validFob.length; m++) {
           if (validFob[m] && validFob[m].toLowerCase().indexOf(value.toLowerCase()) >= 0) {
@@ -2676,7 +2992,6 @@ function loadSkuIntoForm(sku) {
       return;
     }
 
-    // Default: assign string directly
     state[stateKey] = value;
     filled.push(stateKey);
   });
@@ -2781,6 +3096,7 @@ function wireSheetIntegration() {
 // ============ BOOT ============
 loadTokyoExample();
 wireSheetIntegration();
+wireSpecMapping();
 </script>
 </body>
 </html>
