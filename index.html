@@ -296,14 +296,8 @@
     --brand-display-weight-light: 500;
     --brand-display-weight-bold: 800;
   }
-  .page.brand-hotline-blanca,
-  .page.brand-hotline-tv,
-  .page.brand-hotline-audio {
+  .page.brand-hotline {
     --brand-primary: #2B3C73;
-    --brand-dark: #231F20;
-  }
-  .page.brand-hotline-cuidado {
-    --brand-primary: #EE212E;
     --brand-dark: #231F20;
   }
 
@@ -1304,10 +1298,7 @@
           <select id="brand">
             <option value="rca">RCA</option>
             <option value="westinghouse">Westinghouse</option>
-            <option value="hotline-blanca">Hotline · Línea Blanca</option>
-            <option value="hotline-tv">Hotline · TV</option>
-            <option value="hotline-audio">Hotline · Audio y Video</option>
-            <option value="hotline-cuidado">Hotline · Cuidado Personal</option>
+            <option value="hotline">Hotline</option>
           </select>
         </div>
         <div class="field">
@@ -1724,31 +1715,7 @@ var BRAND_DEFAULTS = {
     footerMade: 'POWERING <span>PEOPLE</span> SINCE 1886',
     trademark: '(W) y Westinghouse son marcas de Westinghouse Electric Corporation. Usadas bajo licencia.'
   },
-  'hotline-blanca': {
-    logoKey: 'hotline',
-    logoText: 'H',
-    logoClass: '',
-    signoff: 'Hotline <strong>Desde 1985</strong>',
-    footerMade: 'HOTLINE <span>DESDE 1985</span>',
-    trademark: 'Hotline. Todos los derechos reservados.'
-  },
-  'hotline-tv': {
-    logoKey: 'hotline',
-    logoText: 'H',
-    logoClass: '',
-    signoff: 'Hotline <strong>Desde 1985</strong>',
-    footerMade: 'HOTLINE <span>DESDE 1985</span>',
-    trademark: 'Hotline. Todos los derechos reservados.'
-  },
-  'hotline-audio': {
-    logoKey: 'hotline',
-    logoText: 'H',
-    logoClass: '',
-    signoff: 'Hotline <strong>Desde 1985</strong>',
-    footerMade: 'HOTLINE <span>DESDE 1985</span>',
-    trademark: 'Hotline. Todos los derechos reservados.'
-  },
-  'hotline-cuidado': {
+  'hotline': {
     logoKey: 'hotline',
     logoText: 'H',
     logoClass: '',
@@ -1829,11 +1796,20 @@ function renderSpecs() {
   var container = document.getElementById('specsRepeater');
   container.innerHTML = '';
   state.specs.forEach(function(group, gi) {
+    // Defensive: migrate legacy .rows shape to .items if needed
+    if (group.rows && !group.items) {
+      group.items = group.rows.map(function(r){
+        return { label: r.label || r.key || '', value: r.value || '' };
+      });
+      delete group.rows;
+    }
+    if (!group.items) group.items = [];
+
     var div = document.createElement('div');
     div.className = 'repeater-item';
     var html = '<button class="remove" data-gi="' + gi + '">\u00D7</button>';
     html += '<div class="field"><label>Título del grupo</label>';
-    html += '<input type="text" data-key="title" data-gi="' + gi + '" value="' + esc(group.title || '') + '" />';
+    html += '<input type="text" data-key="title" data-gi="' + gi + '" value="' + esc(group.title || '') + '" placeholder="ej. Audio, Conectividad" />';
     html += '</div>';
     html += '<div class="field"><label style="font-size:10px;">Filas de especificaciones</label>';
     html += '<div class="repeater" data-rows="' + gi + '"></div>';
@@ -1843,14 +1819,14 @@ function renderSpecs() {
     container.appendChild(div);
 
     var rowsContainer = div.querySelector('[data-rows="' + gi + '"]');
-    (group.rows || []).forEach(function(row, ri) {
+    group.items.forEach(function(item, ri) {
       var rdiv = document.createElement('div');
       rdiv.className = 'repeater-item';
       rdiv.style.padding = '4px';
       var rhtml = '<button class="remove" data-gi="' + gi + '" data-ri="' + ri + '">\u00D7</button>';
       rhtml += '<div class="field-row">';
-      rhtml += '<input type="text" data-spec-key="key" data-gi="' + gi + '" data-ri="' + ri + '" value="' + esc(row.key || '') + '" placeholder="Característica" />';
-      rhtml += '<input type="text" data-spec-key="value" data-gi="' + gi + '" data-ri="' + ri + '" value="' + esc(row.value || '') + '" placeholder="Valor" />';
+      rhtml += '<input type="text" data-spec-key="label" data-gi="' + gi + '" data-ri="' + ri + '" value="' + esc(item.label || '') + '" placeholder="Etiqueta (ej. Drivers / Speakers)" />';
+      rhtml += '<input type="text" data-spec-key="value" data-gi="' + gi + '" data-ri="' + ri + '" value="' + esc(item.value || '') + '" placeholder="Valor (ej. 10\" × 2)" />';
       rhtml += '</div>';
       rdiv.innerHTML = rhtml;
       rowsContainer.appendChild(rdiv);
@@ -1867,7 +1843,7 @@ function renderSpecs() {
     el.addEventListener('input', function(e) {
       var gi = parseInt(e.target.dataset.gi, 10);
       var ri = parseInt(e.target.dataset.ri, 10);
-      state.specs[gi].rows[ri][e.target.dataset.specKey] = e.target.value;
+      state.specs[gi].items[ri][e.target.dataset.specKey] = e.target.value;
       renderPreview();
     });
   });
@@ -1882,7 +1858,7 @@ function renderSpecs() {
     btn.addEventListener('click', function(e) {
       var gi = parseInt(e.currentTarget.dataset.gi, 10);
       var ri = parseInt(e.currentTarget.dataset.ri, 10);
-      state.specs[gi].rows.splice(ri, 1);
+      state.specs[gi].items.splice(ri, 1);
       renderSpecs();
       renderPreview();
     });
@@ -1890,15 +1866,15 @@ function renderSpecs() {
   container.querySelectorAll('.add-row').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
       var gi = parseInt(e.currentTarget.dataset.gi, 10);
-      if (!state.specs[gi].rows) state.specs[gi].rows = [];
-      state.specs[gi].rows.push({ key: '', value: '' });
+      if (!state.specs[gi].items) state.specs[gi].items = [];
+      state.specs[gi].items.push({ label: '', value: '' });
       renderSpecs();
       renderPreview();
     });
   });
 }
 document.getElementById('addSpecGroup').addEventListener('click', function() {
-  state.specs.push({ title: '', rows: [{ key: '', value: '' }] });
+  state.specs.push({ title: '', items: [{ label: '', value: '' }] });
   renderSpecs();
   renderPreview();
 });
@@ -2533,14 +2509,65 @@ function applySpecMappingToRow(row) {
   });
 }
 
+// ---- Undo state for spec mapping edits ----
+var lastSpecUndo = null;
+
+function performSpecUndo() {
+  if (!lastSpecUndo) return;
+  if (lastSpecUndo.type === 'delete') {
+    // Restore entry at its original position
+    var idx = Math.min(lastSpecUndo.index, specMapping.length);
+    specMapping.splice(idx, 0, lastSpecUndo.entry);
+  } else if (lastSpecUndo.type === 'clear') {
+    specMapping = lastSpecUndo.mapping.slice();
+  }
+  lastSpecUndo = null;
+  saveSpecMappingConfig();
+  renderSpecMappingEditor();
+}
+
+function describeLastSpecUndo() {
+  if (!lastSpecUndo) return '';
+  if (lastSpecUndo.type === 'delete') {
+    var e = lastSpecUndo.entry || {};
+    var col = e.sheetCol || '(vac\u00EDo)';
+    var lbl = e.label || '(vac\u00EDo)';
+    return 'Eliminado: ' + col + ' \u2192 ' + lbl;
+  }
+  if (lastSpecUndo.type === 'clear') {
+    return 'Mapeo borrado (' + (lastSpecUndo.mapping ? lastSpecUndo.mapping.length : 0) + ' filas)';
+  }
+  return '';
+}
+
 // ---- Admin UI: render the spec mapping editor ----
 function renderSpecMappingEditor() {
   var container = document.getElementById('specMappingList');
   if (!container) return;
   container.innerHTML = '';
 
+  // Undo banner (renders above list, only if undo is available)
+  if (lastSpecUndo) {
+    var banner = document.createElement('div');
+    banner.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:#2a2a35;border:1px solid #3a3a48;border-radius:4px;margin-bottom:10px;font-size:11px;color:#c8c9d2;';
+    var msg = document.createElement('span');
+    msg.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    msg.textContent = describeLastSpecUndo();
+    var undoBtn = document.createElement('button');
+    undoBtn.className = 'btn secondary';
+    undoBtn.textContent = '\u21B6 Deshacer';
+    undoBtn.style.cssText = 'padding:4px 10px;font-size:11px;flex-shrink:0;';
+    undoBtn.addEventListener('click', performSpecUndo);
+    banner.appendChild(msg);
+    banner.appendChild(undoBtn);
+    container.appendChild(banner);
+  }
+
   if (!specMapping.length) {
-    container.innerHTML = '<div style="font-size:10px;color:#6a6b76;font-style:italic;padding:8px;text-align:center;">No hay specs mapeados. Haz clic en "+ Agregar fila" para empezar.</div>';
+    var emptyEl = document.createElement('div');
+    emptyEl.style.cssText = 'font-size:10px;color:#6a6b76;font-style:italic;padding:8px;text-align:center;';
+    emptyEl.textContent = 'No hay specs mapeados. Haz clic en "+ Agregar fila" para empezar.';
+    container.appendChild(emptyEl);
     return;
   }
 
@@ -2585,6 +2612,13 @@ function renderSpecMappingEditor() {
     btnRemove.title = 'Eliminar';
     btnRemove.style.cssText = 'width:24px;height:24px;font-size:14px;flex-shrink:0;';
     btnRemove.addEventListener('click', function() {
+      // Capture for undo
+      var deletedEntry = specMapping[idx];
+      lastSpecUndo = {
+        type: 'delete',
+        entry: deletedEntry,
+        index: idx
+      };
       specMapping.splice(idx, 1);
       saveSpecMappingConfig();
       renderSpecMappingEditor();
@@ -2620,6 +2654,7 @@ function autoDetectSpecMapping() {
     alert('Primero configura y prueba la conexión al sheet.');
     return;
   }
+  lastSpecUndo = null;  // Auto-detect invalidates undo
   // Get columns already mapped in the main field mapping (don't duplicate them)
   var alreadyMapped = {};
   Object.keys(SHEET_COLUMN_FIELDS).forEach(function(fid) {
@@ -2669,6 +2704,7 @@ function wireSpecMapping() {
 
   var addBtn = document.getElementById('addSpecMappingRow');
   if (addBtn) addBtn.addEventListener('click', function() {
+    lastSpecUndo = null;  // Adding a row invalidates undo
     specMapping.push({ sheetCol: '', label: '', group: 'Características / Features' });
     saveSpecMappingConfig();
     renderSpecMappingEditor();
@@ -2682,7 +2718,12 @@ function wireSpecMapping() {
 
   var clearBtn = document.getElementById('clearSpecMapping');
   if (clearBtn) clearBtn.addEventListener('click', function() {
-    if (!confirm('¿Borrar todos los mapeos de specs?')) return;
+    if (!specMapping.length) return;
+    if (!confirm('¿Borrar todos los mapeos de specs? Podrás deshacer esta acción.')) return;
+    lastSpecUndo = {
+      type: 'clear',
+      mapping: specMapping.slice()  // shallow copy of the array
+    };
     specMapping = [];
     saveSpecMappingConfig();
     renderSpecMappingEditor();
